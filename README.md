@@ -1,6 +1,6 @@
-# AI Productivity Toolkit
+# Career + Academic Toolkit :)
 
-This repository contains two Streamlit applications designed to automate and simplify common writing and research tasks using OpenAI models and modern NLP tools.
+This repository (work in progress, more tools coming soon!) contains two Streamlit applications designed to automate and simplify common career/academic tasks using OpenAI models and modern NLP tools.
 
 The toolkit includes:
 
@@ -9,7 +9,9 @@ The toolkit includes:
 ## Cover Letter Generator
 
 Upload your resume (PDF or `.txt`) and a tech job description to generate a tailored cover letter based on your experiences.  
+
 The tool parses your resume into relevant sections (skills, experience, education, projects, awards), integrates this information into the writing, and provides ATS keyword analysis with matched/missing keywords.  
+
 The final letter can be downloaded as a PDF.
 
 ---
@@ -17,7 +19,9 @@ The final letter can be downloaded as a PDF.
 ## YouTube Assistant
 
 Paste a YouTube URL to automatically retrieve a video transcript, break it into semantic chunks, embed the chunks, and store them in a FAISS vector index.  
+
 The app uses vector search to identify the most important parts of the video and generates a structured summary along with a customizable MCQ quiz.  
+
 All processing runs locally with a clean Streamlit interface.
 
 ---
