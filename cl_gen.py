@@ -2,22 +2,121 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import streamlit as st
+from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from io import BytesIO
+import json
 
-# Set up the page and title the Streamlit interface
 st.set_page_config(page_title="Cover Letter Generator")
-st.title("Cover Letter Generator")
+st.title("Cover Letter Generator with Resume Parsing and ATS Optimization")
 
-# Load API key from the .env file
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-# Function that asks the model to write the cover letter
-def generate_cover_letter(contact_person, your_name, role, company_name, personal_experience, job_description):
-    # This prompt gives the model some structure and asks it to avoid typical AI-sounding language
+def extract_resume_text(uploaded_file):
+    """
+    Extracts text from an uploaded résumé file.
+
+    Accepts PDF or plain text files. For PDFs, each page is read using PdfReader
+    and text is extracted if available. If the file is a .txt, the contents
+    are decoded into a UTF-8 string.
+
+    Returns:
+        str: Combined raw text extracted from the uploaded file.
+    """
+    if uploaded_file is None:
+        return ""
+
+    # If the uploaded file is a PDF, extract text from each page.
+    if uploaded_file.type == "application/pdf":
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            # Some pages may return None, so we fall back to an empty string
+            text += page.extract_text() or ""
+        return text
+
+    # For plain text files
+    try:
+        return uploaded_file.read().decode("utf-8", errors="ignore")
+    except:
+        return ""
+
+
+def parse_resume_to_json(resume_text):
+    """
+    Converts raw resume text into structured JSON
+
+    Sends the resume text to the OpenAI model and requests output in a strict JSON
+    structure containing: skills, experience, achievements, education, and projects.
+    If parsing fails, the function returns an empty structured template.
+
+    Args:
+        resume_text (str): Raw extracted résumé text.
+
+    Returns:
+        dict: A structured representation of résumé content.
+    """
+    prompt = f"""
+    Extract structured résumé information from the text below.
+    Return ONLY valid JSON in exactly this structure:
+
+    {{
+      "skills": [],
+      "experience": [],
+      "achievements": [],
+      "education": [],
+      "projects": []
+    }}
+
+    Projects may include personal, academic, research, capstone, or portfolio work.
+    If the resume is missing a category, return an empty list for it.
+
+    Resume text:
+    {resume_text}
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-5.1",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    # Attempt to parse JSON. If it fails, return a clean default structure.
+    try:
+        parsed = json.loads(response.choices[0].message["content"])
+    except:
+        parsed = {
+            "skills": [],
+            "experience": [],
+            "achievements": [],
+            "education": [],
+            "projects": []
+        }
+
+    return parsed
+
+
+def generate_cover_letter(contact_person, your_name, role, company_name, resume_data, job_description):
+    """
+    Generates a personalized cover letter.
+
+    Uses structured resume data (skills, experience, achievements, projects, education)
+    and the job description to create a grounded, non-generic cover letter.
+    The prompt encourages the model to integrate resume details meaningfully.
+
+    Args:
+        contact_person (str): Name of hiring manager or recipient.
+        your_name (str): Applicant's name.
+        role (str): Job role being applied for.
+        company_name (str): Company name.
+        resume_data (dict): Structured JSON resume data.
+        job_description (str): Raw job description text.
+
+    Returns:
+        str: The generated cover letter text.
+    """
     prompt = f"""
     Write a polished, professional cover letter.
 
@@ -27,27 +126,65 @@ def generate_cover_letter(contact_person, your_name, role, company_name, persona
     Job Role: {role}
     Company: {company_name}
 
-    The candidate has experience in: {personal_experience}
+    Use the following résumé data:
 
-    Tailor it to match this job description:
+    Skills:
+    {resume_data["skills"]}
+
+    Experience:
+    {resume_data["experience"]}
+
+    Achievements:
+    {resume_data["achievements"]}
+
+    Education:
+    {resume_data["education"]}
+
+    Projects:
+    {resume_data["projects"]}
+
+    The job description is:
     {job_description}
 
-    Please keep the tone clear and professional. Avoid awkward phrasing, unnecessary filler,
-    em dashes, or anything that sounds obviously AI-generated.
+    Use the resume information to make the letter specific and grounded.
+    Avoid generic AI phrasing or filler, and keep the tone professional.
     """
 
     response = client.chat.completions.create(
         model="gpt-5.1",
         messages=[{"role": "user", "content": prompt}]
     )
+
     return response.choices[0].message["content"]
 
-# function scores 
-def get_ats_score(personal_experience, job_description):
-    # First we ask the model to pull out the important keywords from the job description
+
+def get_ats_score(resume_data, job_description):
+    """
+    Computes an approximate ATS keyword match score.
+
+    Extracts essential keywords from the job description using the model,
+    then checks which of those keywords appear in the résumé content.
+    The score is the percentage of matched keywords.
+
+    Args:
+        resume_data (dict): Parsed résumé data fields.
+        job_description (str): Full job description text.
+
+    Returns:
+        tuple: (score_percentage, matched_keywords, missing_keywords)
+    """
+    # Combine resume content into a searchable text block
+    resume_text = (
+        " ".join(resume_data["skills"])
+        + " "
+        + " ".join(resume_data["experience"])
+        + " "
+        + " ".join(resume_data["projects"])
+    ).lower()
+
     extract_prompt = f"""
-    Pull out the 10 to 20 most important keywords or skills from this job description.
-    Please return the results as a Python list of strings without additional explanation.
+    Extract the 10–20 most important keywords or skills from this job description.
+    Return them as a Python list of strings only.
 
     Job description:
     {job_description}
@@ -58,96 +195,92 @@ def get_ats_score(personal_experience, job_description):
         messages=[{"role": "user", "content": extract_prompt}]
     )
 
-    # The model sends back something like: ["Python", "API Development", ...]
-    # We try to evaluate it into a list; if it fails, we fall back to an empty list.
+    # Model returns a Python list as text, so eval is used cautiously
     try:
         keywords = eval(response.choices[0].message["content"])
     except:
         keywords = []
 
-    exp_lower = personal_experience.lower()
+    matches = [kw for kw in keywords if kw.lower() in resume_text]
+    missing = [kw for kw in keywords if kw.lower() not in resume_text]
 
-    # Determine what matches and what's missing
-    matches = [kw for kw in keywords if kw.lower() in exp_lower]
-    missing = [kw for kw in keywords if kw.lower() not in exp_lower]
+    score = int((len(matches) / len(keywords)) * 100) if keywords else 0
 
-    # Compute a simple percentage score based on the matches
-    if keywords:
-        score = int((len(matches) / len(keywords)) * 100)
-    else:
-        score = 0
+    return score, matches, missing
 
-    return score, matches, missing, keywords
 
-# function turns generated letter into pdf
-def generate_pdf(text):
-    # We use a bytes buffer rather than writing straight to disk.
+def generate_pdf(letter_text):
+    """
+    Generates a PDF file from the cover letter text.
+
+    Writes the content line-by-line onto a PDF canvas and stores the
+    resulting file in a buffer for download through Streamlit.
+
+    Args:
+        letter_text (str): Cover letter text to write into the PDF.
+
+    Returns:
+        BytesIO: A buffer containing the generated PDF file.
+    """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
 
-    # Establish a starting text position and font
-    text_object = c.beginText(40, 750)
-    text_object.setFont("Times-Roman", 12)
+    text_obj = c.beginText(40, 750)
+    text_obj.setFont("Times-Roman", 12)
 
-    # Add the text line by line
-    for line in text.split("\n"):
-        text_object.textLine(line)
+    # Each line is written individually to maintain formatting
+    for line in letter_text.split("\n"):
+        text_obj.textLine(line)
 
-    c.drawText(text_object)
+    c.drawText(text_obj)
     c.save()
-
     buffer.seek(0)
     return buffer
 
-# streamlit UI
 
-st.subheader("Enter Your Information")
+# Streamlit interface begins
+st.subheader("Enter Information")
 
 contact_person = st.text_input("Who is the letter addressed to?")
 your_name = st.text_input("Your Name")
 role = st.text_input("Job Role")
 company_name = st.text_input("Company Name")
-personal_experience = st.text_area("Your relevant experience")
+
+uploaded_resume = st.file_uploader("Upload your resume (PDF or text)", type=["pdf", "txt"])
 job_description = st.text_area("Paste the job description")
 
-# Button that triggers both the cover letter and ATS scoring
+
 if st.button("Generate Cover Letter"):
-    if not all([contact_person, your_name, role, company_name, personal_experience, job_description]):
-        st.error("Please make sure all fields are filled out.")
+    if not all([contact_person, your_name, role, company_name, job_description]):
+        st.error("Please fill out all fields and upload a résumé.")
     else:
-        with st.spinner("Creating your cover letter..."):
+        with st.spinner("Extracting résumé text..."):
+            resume_text = extract_resume_text(uploaded_resume)
+
+        with st.spinner("Parsing résumé into structured data..."):
+            resume_data = parse_resume_to_json(resume_text)
+
+        with st.spinner("Generating cover letter..."):
             letter = generate_cover_letter(
                 contact_person,
                 your_name,
                 role,
                 company_name,
-                personal_experience,
+                resume_data,
                 job_description
             )
 
-        with st.spinner("Analyzing your keyword match..."):
-            score, matches, missing, keywords = get_ats_score(
-                personal_experience,
-                job_description
-            )
+        with st.spinner("Computing ATS score..."):
+            score, matches, missing = get_ats_score(resume_data, job_description)
 
-        st.success("Your cover letter is ready.")
-
-        # Show the letter text
         st.subheader("Your Cover Letter")
         st.write(letter)
 
-        # Show ATS scoring info
         st.subheader("ATS Keyword Match Score")
-        st.metric(label="Score", value=f"{score}%")
+        st.metric("Score", f"{score}%")
+        st.write("Matched Keywords:", matches)
+        st.write("Missing Keywords:", missing)
 
-        st.write("Matched Keywords:")
-        st.write(matches if matches else "None found")
-
-        st.write("Missing Keywords:")
-        st.write(missing if missing else "None missing")
-
-        # Offer PDF download
         pdf_file = generate_pdf(letter)
         st.download_button(
             label="Download as PDF",
